@@ -1,0 +1,171 @@
+﻿@using System.Drawing;
+@using System.Drawing.Imaging;
+@using Tesseract;
+
+<div class="ms-3">
+    <button type="button" class="btn btn-green" onclick="document.getElementById('ocrfile').click()">OCR辨識</button>
+    <label for="" class="col-form-label">支援PDF、TIF、TIFF、PNG、JPG、JPEG、BMP</label>
+    <div for="" class="col-form-label">
+        @if (message != "")
+        {
+            <div class="spinner-border text-success" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        }
+        @message
+    </div>
+    <InputFile OnChange="@LoadOCRFile" id="ocrfile" class="d-none" accept="application/pdf,image/tiff,image/png,.jpg,.jpeg,image/bmp" />
+</div>
+@if (ocr)
+{
+    <div class="m-3">
+        <div class="row">
+            <div class="col-auto">
+                <button type="button" class="btn btn-success" @onclick="FirstPage">第一頁</button>
+                <button type="button" class="btn btn-success" @onclick="PreviousPage">上一頁</button>
+                <label for="indexTo" class="col-form-label">第</label>
+            </div>
+            <div class="col-auto px-0">
+                <input type="number" @bind="indexTo" class="form-control" id="indexTo" />
+            </div>
+            <div class="col-auto">
+                <label for="indexTo" class="col-form-label">頁 / 共 @pages.Count 頁</label>
+                <button type="button" class="btn btn-success" @onclick="JumpPage">跳轉</button>
+                <button type="button" class="btn btn-success" @onclick="NextPage">下一頁</button>
+                <button type="button" class="btn btn-success" @onclick="LastPage">最後一頁</button>
+            </div>
+            <div class="col-auto ms-auto">
+                <button type="button" class="btn btn-danger" @onclick="CloseOCR">關閉辨識區域</button>
+            </div>
+        </div>
+        <div class="row p-3 border border-dark">
+            <div class="col-6">
+                <img src="data:image/jpeg;base64,@PageString()" class="img-fluid">
+            </div>
+            <div class="col-6">
+                <textarea id="ocrtext" class="form-control" rows="40" @bind="ocrtext"></textarea>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private string message = "";
+    private List<string> pages = new();
+    private int _index = 0;
+    private int index
+    {
+        get { return _index; }
+        set
+        {
+            _index = value;
+            indexTo = value + 1;
+        }
+    }
+    private int indexTo = 1;
+    private bool ocr = false;
+    private string ocrtext = "";
+    private string datapath = Path.Combine(Environment.CurrentDirectory, @"OCR");
+
+    private async void LoadOCRFile(InputFileChangeEventArgs e)
+    {
+        if (e.FileCount == 1)
+        {
+            ocr = false;
+            message = "OCR辨識中...";
+            pages.Clear();
+            index = 0;
+            ocrtext = "";
+            using var memoryStream = new MemoryStream();
+            await e.File.OpenReadStream(int.MaxValue).CopyToAsync(memoryStream);
+            switch (Path.GetExtension(e.File.Name).ToLower())
+            {
+                case ".pdf":
+                    var images = PDFtoImage.Conversion.ToImages(memoryStream);
+                    foreach (var image in images)
+                    {
+                        using (var stream = new MemoryStream())
+                        {
+                            image.Encode(stream, SkiaSharp.SKEncodedImageFormat.Png, 300);
+                            pages.Add(Convert.ToBase64String(stream.ToArray()));
+                            ocrtext += ImgByteArrayToText(stream.ToArray());
+                        }
+                    }
+                    break;
+                case ".tif" or ".tiff":
+                    Bitmap tiffpages = (Bitmap)Image.FromStream(memoryStream);
+                    for (int i = 0; i < tiffpages.GetFrameCount(FrameDimension.Page); i++)
+                    {
+                        tiffpages.SelectActiveFrame(FrameDimension.Page, i);
+                        using (var stream = new MemoryStream())
+                        {
+                            tiffpages.Save(stream, System.Drawing.Imaging.ImageFormat.Png);
+                            pages.Add(Convert.ToBase64String(stream.ToArray()));
+                            ocrtext += ImgByteArrayToText(stream.ToArray());
+                        }
+                    }
+                    tiffpages.Dispose();
+                    break;
+                case ".png" or ".jpg" or ".jpeg" or ".bmp":
+                    pages.Add(Convert.ToBase64String(memoryStream.ToArray()));
+                    ocrtext += ImgByteArrayToText(memoryStream.ToArray());
+                    break;
+                default:
+                    break;
+            }
+            while (ocrtext.Contains("\n\n") || ocrtext.Contains("  ") || ocrtext.Contains("\n \n \n"))
+            {
+                ocrtext = ocrtext.Replace("\n\n", "\n").Replace("  ", " ").Replace("\n \n \n", "\n \n");
+            }
+            message = "";
+            ocr = true;
+            StateHasChanged();
+        }
+    }
+    private void CloseOCR()
+    {
+        ocr = false;
+    }
+    private void FirstPage()
+    {
+        index = 0;
+    }
+    private void PreviousPage()
+    {
+        if (index > 0) index--;
+    }
+    private void JumpPage()
+    {
+        if (indexTo > 0 && indexTo <= pages.Count)
+        {
+            index = indexTo - 1;
+            StateHasChanged();
+        }
+    }
+    private void NextPage()
+    {
+        if (index < pages.Count - 1) index++;
+    }
+    private void LastPage()
+    {
+        index = pages.Count - 1;
+    }
+    private string PageString()
+    {
+        string result = "";
+        if (index < pages.Count)
+        {
+            result = pages[index];
+        }
+        return result;
+    }
+    private string ImgByteArrayToText(Byte[] bytes)
+    {
+        using (var engine = new TesseractEngine(datapath, "chi_tra", EngineMode.Default))
+        using (var img = Pix.LoadFromMemory(bytes))
+        using (var page = engine.Process(img))
+        {
+            return page.GetText();
+        }
+    }
+}
